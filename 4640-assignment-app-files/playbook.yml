@@ -1,0 +1,147 @@
+---
+- name: Configure AWS EC2 instance installation and application
+  hosts: web
+  become: true
+  remote_user: root
+  vars:
+    user: bun
+
+  tasks:
+    # APT update and install unzip
+    # Command: sudo apt update
+    - name: Update apt packages
+      ansible.builtin.apt:
+        update_cache: true
+
+    # Command: sudo apt install unzip
+    - name: Install unzip package
+      ansible.builtin.apt:
+        name: unzip
+        state: present
+
+
+    # Installs required packages for Caddy
+    # Command: sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    - name: Install Caddy required packages
+      ansible.builtin.apt:
+        name: "{{ caddy_required_packages }}" # using variable "caddy_required_packages"
+        state: present # lastest version
+        update_cache: true  # Ensure package lists are updated
+      vars:
+        caddy_required_packages:
+          - debian-keyring
+          - debian-archive-keyring
+          - apt-transport-https
+          - curl
+
+    # Downloads the GPG key for Caddy
+    # Command: curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    - name: Download Caddy GPG key
+      ansible.builtin.get_url:
+        url: "https://dl.cloudsmith.io/public/caddy/stable/gpg.key"
+        dest: "/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+        mode: "0755"
+
+    # Adds Caddy repository to the system
+    # Command: curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    - name: Add Caddy repository txt file to temporary directory
+      ansible.builtin.get_url:
+        url: "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt"
+        dest: "/tmp/debian.deb.txt"
+        mode: "0755"
+
+    - name: Save txt file to list file from temporary directory
+      ansible.builtin.shell:
+        cmd: cat /tmp/debian.deb.txt | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
+    # Install Caddy
+    - name: Install Caddy web server
+      ansible.builtin.apt:
+        name: caddy
+        state: present
+
+    # Enable and start the Caddy service
+    - name: Enable and start Caddy service
+      ansible.builtin.service:
+        name: caddy
+        enabled: true
+        state: started
+
+    # Create Bun regular user
+    - name: Create Bun regular user
+      ansible.builtin.user:
+        name: "{{ user }}"
+        system: false # creating a regular user
+        shell: /bin/bash # the default shell for non-system users
+
+    # Install Bun in bun user
+    # Command to install Bun: curl -fsSL https://bun.sh/install | bash
+    - name: Install Bun runtime
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://bun.sh/install | sudo -u {{ user }} bash
+
+    # Transfer application files
+    - name: Transfer application file
+      ansible.builtin.copy:
+        src: "../4640-assignment-app-files/bun-htmx-4640"
+        dest: "/home/bun/"
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0755"
+
+    # Transfer caddy files
+    - name: Transfer Caddyfile
+      ansible.builtin.copy:
+        src: "../4640-assignment-app-files/Caddyfile"
+        dest: "/etc/caddy/Caddyfile"
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0644"
+
+    # Install application dependencies
+    - name: Install bun dependencies
+      ansible.builtin.shell:
+        cmd: cd /home/bun/bun-htmx-4640 && /home/bun/.bun/bin/bun install
+
+
+    # Transfer bun service files
+    - name: Transfer service file
+      ansible.builtin.copy:
+        src: "../4640-assignment-app-files/bun-4640-project.service"
+        dest: "/etc/systemd/system"
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0755"
+
+    # Enable, Start bun service
+    - name: Enable and start project service
+      ansible.builtin.systemd:
+        name: bun-4640-project.service
+        enabled: true
+        state: started
+
+    # Reload systemd after making changes to system file
+    - name: Reload systemd to recognize new service
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    # Ansible conditionals: notify
+    - name: Restart everything
+      ansible.builtin.shell:
+        cmd: echo "This task will restart the web services"
+      notify: "restart caddy"
+
+
+  handlers:
+    # Check the existence of the Caddy service file
+    - name: Check if caddy service exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/caddy.service
+      register: caddy_service_file
+
+    # Restart the Caddy service if triggered
+    - name: Restart Caddy service only when needed
+      ansible.builtin.systemd:
+        name: caddy
+        state: restarted
+      listen: "restart caddy"
